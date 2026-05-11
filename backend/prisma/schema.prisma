@@ -1,0 +1,350 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  CIVILIAN
+  AGENT
+  CLINIC
+  ADMIN
+}
+
+enum KycStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SlotStatus {
+  AVAILABLE
+  LOCKED   // held pending payment (max 30 min)
+  BOOKED   // payment confirmed
+  BLOCKED  // manual block or 1-hour buffer
+}
+
+enum BookingStatus {
+  PENDING_AGENT    // awaiting agent accept (30 min deadline)
+  LOCKED           // agent accepted, awaiting civilian payment (30 min deadline)
+  CONFIRMED        // payment received via 藍新 webhook
+  CANCELLED_CIVILIAN
+  CANCELLED_AGENT
+  EXPIRED_AGENT    // agent did not respond within 30 min
+  EXPIRED_PAYMENT  // civilian did not pay within 30 min
+}
+
+enum WalletStatus {
+  PENDING    // awaiting clinic scan/verification
+  AVAILABLE  // verified, ready for monthly payout
+  PAID       // disbursed via 藍新 auto-payout
+}
+
+enum VerificationStatus {
+  PENDING_AGENT    // clinic submitted amount, waiting agent confirm (30 min)
+  CONFIRMED        // agent confirmed
+  AUTO_CONFIRMED   // 30 min elapsed, auto-confirmed
+  DISPUTED         // agent raised dispute, admin handles
+}
+
+enum BroadcastStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SENT
+}
+
+// ─── Core models ──────────────────────────────────────────────────────────────
+
+model User {
+  id          String   @id @default(uuid())
+  lineUserId  String   @unique @map("line_user_id")
+  displayName String   @map("display_name")
+  pictureUrl  String?  @map("picture_url")
+  role        UserRole @default(CIVILIAN)
+  isActive    Boolean  @default(true) @map("is_active")
+
+  // Civilian subscription
+  isSubscribed          Boolean   @default(false) @map("is_subscribed")
+  subscriptionExpiresAt DateTime? @map("subscription_expires_at")
+
+  agentProfile AgentProfile?
+  clinicProfile ClinicProfile?
+  bookingsAsCivilian Booking[] @relation("CivilianBookings")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model AgentProfile {
+  id     String @id @default(uuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
+
+  kycStatus     KycStatus @default(NONE) @map("kyc_status")
+  demeritPoints Int       @default(0) @map("demerit_points")
+  isSuspended   Boolean   @default(false) @map("is_suspended")
+
+  bio      String?
+  photoUrl String? @map("photo_url")
+
+  // Bank info for monthly payouts
+  bankAccountName String? @map("bank_account_name")
+  bankCode        String? @map("bank_code")
+  bankAccount     String? @map("bank_account")
+
+  kycSubmissions     KycSubmission[]
+  availabilityRules  AvailabilityRule[]
+  availabilitySlots  AvailabilitySlot[]
+  bookings           Booking[] @relation("AgentBookings")
+  walletTransactions WalletTransaction[]
+  demeritLogs        DemeritLog[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("agent_profiles")
+}
+
+model ClinicProfile {
+  id     String @id @default(uuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
+
+  name    String
+  address String?
+  phone   String?
+
+  // Current commission rate — snapshots lock this value at booking confirmation time
+  commissionRate Decimal @map("commission_rate") @db.Decimal(5, 4)
+
+  contractSignedAt DateTime? @map("contract_signed_at")
+
+  broadcastRequests        BroadcastRequest[]
+  transactionVerifications TransactionVerification[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("clinic_profiles")
+}
+
+// ─── Scheduling ───────────────────────────────────────────────────────────────
+
+// Recurring weekly availability rule (e.g. every Tuesday 09:00–10:00)
+model AvailabilityRule {
+  id             String       @id @default(uuid())
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id])
+
+  dayOfWeek Int    @map("day_of_week") // 0=Sun … 6=Sat
+  startTime String @map("start_time")  // "09:00"
+  endTime   String @map("end_time")    // "10:00"
+  isActive  Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("availability_rules")
+}
+
+// Concrete date/time slot (generated from rules or created one-off)
+model AvailabilitySlot {
+  id             String       @id @default(uuid())
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id])
+
+  startAt DateTime   @map("start_at")
+  endAt   DateTime   @map("end_at")
+  status  SlotStatus @default(AVAILABLE)
+
+  // Populated if generated from a recurring rule
+  ruleId String? @map("rule_id")
+
+  booking Booking?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("availability_slots")
+}
+
+// ─── Booking state machine ────────────────────────────────────────────────────
+
+model Booking {
+  id             String       @id @default(uuid())
+  civilianId     String       @map("civilian_id")
+  civilian       User         @relation("CivilianBookings", fields: [civilianId], references: [id])
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation("AgentBookings", fields: [agentProfileId], references: [id])
+  slotId         String       @unique @map("slot_id")
+  slot           AvailabilitySlot @relation(fields: [slotId], references: [id])
+
+  status BookingStatus @default(PENDING_AGENT)
+
+  // Deadlines (UTC)
+  agentResponseDeadline DateTime  @map("agent_response_deadline") // +30 min from creation
+  paymentDeadline       DateTime? @map("payment_deadline")        // +30 min from agent accept
+
+  // 藍新 payment
+  amount          Decimal  @db.Decimal(10, 2)             // 媒合費
+  paymentUrl      String?  @map("payment_url")
+  newebpayTradeNo String?  @unique @map("newebpay_trade_no")
+  paidAt          DateTime? @map("paid_at")
+
+  // Cancellation
+  cancelReason String?   @map("cancel_reason")
+  cancelledBy  String?   @map("cancelled_by") // "civilian" | "agent" | "system"
+  cancelledAt  DateTime? @map("cancelled_at")
+
+  commissionSnapshot      CommissionSnapshot?
+  transactionVerification TransactionVerification?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("bookings")
+}
+
+// ─── Commission & wallet ──────────────────────────────────────────────────────
+
+// Immutable snapshot of split rates recorded at payment confirmation time
+model CommissionSnapshot {
+  id        String  @id @default(uuid())
+  bookingId String  @unique @map("booking_id")
+  booking   Booking @relation(fields: [bookingId], references: [id])
+
+  // Rate snapshot (0.0000 – 1.0000)
+  clinicCommissionRate Decimal @map("clinic_commission_rate") @db.Decimal(5, 4)
+  platformCutRate      Decimal @map("platform_cut_rate") @db.Decimal(5, 4)
+  agentEarningRate     Decimal @map("agent_earning_rate") @db.Decimal(5, 4)
+
+  // Computed amounts
+  totalAmount     Decimal @map("total_amount") @db.Decimal(10, 2)
+  agentEarning    Decimal @map("agent_earning") @db.Decimal(10, 2)
+  platformEarning Decimal @map("platform_earning") @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("commission_snapshots")
+}
+
+// Clinic scans agent QR code → inputs transaction amount → agent confirms
+model TransactionVerification {
+  id              String        @id @default(uuid())
+  bookingId       String        @unique @map("booking_id")
+  booking         Booking       @relation(fields: [bookingId], references: [id])
+  clinicProfileId String        @map("clinic_profile_id")
+  clinicProfile   ClinicProfile @relation(fields: [clinicProfileId], references: [id])
+
+  transactionAmount    Decimal            @map("transaction_amount") @db.Decimal(10, 2)
+  status               VerificationStatus @default(PENDING_AGENT)
+  agentConfirmDeadline DateTime           @map("agent_confirm_deadline") // +30 min
+  confirmedAt          DateTime?          @map("confirmed_at")
+  disputeNote          String?            @map("dispute_note")
+
+  walletTransaction WalletTransaction?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("transaction_verifications")
+}
+
+model WalletTransaction {
+  id             String       @id @default(uuid())
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id])
+
+  verificationId String?                  @unique @map("verification_id")
+  verification   TransactionVerification? @relation(fields: [verificationId], references: [id])
+
+  type   String       // "EARNING" | "PAYOUT" | "ADJUSTMENT"
+  amount Decimal      @db.Decimal(10, 2)
+  status WalletStatus @default(PENDING)
+
+  // Populated after 藍新 auto-payout executes
+  newebpayPayoutRef String?   @map("newebpay_payout_ref")
+  paidAt            DateTime? @map("paid_at")
+
+  note String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("wallet_transactions")
+}
+
+// ─── KYC & compliance ─────────────────────────────────────────────────────────
+
+model KycSubmission {
+  id             String       @id @default(uuid())
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id])
+
+  idCardUrl  String    @map("id_card_url")   // S3 object key
+  bankBookUrl String   @map("bank_book_url") // S3 object key
+
+  status             KycStatus @default(PENDING)
+  reviewNote         String?   @map("review_note")
+  reviewerLineUserId String?   @map("reviewer_line_user_id")
+  reviewedAt         DateTime? @map("reviewed_at")
+
+  submittedAt DateTime @default(now()) @map("submitted_at")
+
+  @@map("kyc_submissions")
+}
+
+// Demerit points are permanent (never decrease); admin decides when to add
+model DemeritLog {
+  id             String       @id @default(uuid())
+  agentProfileId String       @map("agent_profile_id")
+  agentProfile   AgentProfile @relation(fields: [agentProfileId], references: [id])
+
+  points    Int    // typically 1
+  reason    String
+  bookingId String? @map("booking_id")
+  adminNote String? @map("admin_note")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("demerit_logs")
+}
+
+// ─── Clinic broadcast & admin ─────────────────────────────────────────────────
+
+model BroadcastRequest {
+  id              String        @id @default(uuid())
+  clinicProfileId String        @map("clinic_profile_id")
+  clinicProfile   ClinicProfile @relation(fields: [clinicProfileId], references: [id])
+
+  content            String
+  status             BroadcastStatus @default(PENDING)
+  reviewNote         String?         @map("review_note")
+  reviewerLineUserId String?         @map("reviewer_line_user_id")
+  reviewedAt         DateTime?       @map("reviewed_at")
+  scheduledAt        DateTime?       @map("scheduled_at")
+  sentAt             DateTime?       @map("sent_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("broadcast_requests")
+}
+
+// Admin-configurable key-value settings (cancel_window_hours, max_demerit_points, etc.)
+model AdminSetting {
+  key         String  @id
+  value       String
+  description String?
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_settings")
+}

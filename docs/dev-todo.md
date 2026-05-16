@@ -1,105 +1,88 @@
 # 開發待辦清單
 
-> 上次更新：2026-05-11
+> 上次更新：2026-05-16（Sprint 5 完成）
 
 ## 已完成
 
-- [x] 專案規格書 (`docs/functional-spec.md`)
-- [x] 技術規格書 (`docs/tech-spec.md`)
-- [x] 後端專案架構（Node.js + TypeScript + Express + Prisma）
-- [x] PostgreSQL Schema（13 個 model，含狀態機、佣金快照、錢包）
-- [x] Prisma migration 初始化（`20260511152319_init`）
-- [x] Docker PostgreSQL 容器（`carebridge-db`，port 5432）
-- [x] 各角色 API 路由骨架（civilian / agent / clinic / admin / webhook）
-- [x] Auth middleware（requireAuth / requireSubscription / requireAgent / requireClinic / requireAdmin）
-- [x] Prisma seed：5 個測試帳號 + 預設 AdminSetting
-- [x] 前端專案架構（Vite + React + TypeScript）
-- [x] React Router 路由（民眾 × 6、業務 × 5、診所 × 4）
-- [x] LIFF dev mode bypass（`VITE_LIFF_ID` 空白時跳過 LIFF，用 `VITE_DEV_LINE_USER_ID` 模擬登入）
-- [x] 所有 page 存根建立完成
+**基礎建設**
+- [x] 專案規格書 / 技術規格書
+- [x] 後端：Node.js + TypeScript + Express + Prisma 架構
+- [x] PostgreSQL Schema（13 model）+ migration + seed
+- [x] Docker 容器 `carebridge-db`（port 5432）
+- [x] 各角色路由骨架 + Auth middleware（5 種）
+- [x] 前端：Vite + React + TypeScript + React Router
+- [x] LIFF dev mode bypass
 
----
+**Sprint 1 — 預約核心**
+- [x] `POST /civilian/bookings`：衝突檢查（含 1h 緩衝）、建立 Booking、30 分鐘業務回應 deadline
+- [x] LINE Flex Message 接單通知（含 postback 按鈕）
+- [x] `booking:accept`：鎖定時段、產生藍新付款連結、推播民眾
+- [x] `booking:reject`：取消預約、通知民眾
+- [x] 排程：業務/民眾逾時自動取消（`EXPIRED_AGENT` / `EXPIRED_PAYMENT`）
+- [x] 藍新 Webhook：AES解密 + SHA驗簽、`CONFIRMED`、`CommissionSnapshot`、1h 緩衝封鎖
+- [x] `DELETE /civilian/bookings/:id`：24h 退款政策
+- [x] `DELETE /agent/bookings/:id`：全額退款通知
+- [x] `GET /api/payment/:bookingId`：藍新付款轉址頁
 
-## Sprint 1 — 預約核心（P0）
+**Sprint 2 — 排班 & LINE 通知**
+- [x] `GET/POST/DELETE /agent/slots`：時段 CRUD，含衝突檢查（LOCKED/BOOKED 保護）
+- [x] `GET/POST/DELETE /agent/rules`：週期排班 CRUD；建立時立即展開未來 4 週
+- [x] `lib/scheduling.ts`：`expandRule()` / `expandAllActiveRules()`；scheduler 每日補充展開
+- [x] 排程：服務當天台灣時間 8 AM 推播民眾 & 業務提醒
+- [x] LINE Rich Menu：follow 事件 upsert + 依角色/KYC/訂閱狀態綁定（4 種）
+- [x] `AgentDetail.tsx`：FullCalendar.js 顯示可預約時段
+- [x] `BookingConfirm.tsx` / `BookingResult.tsx`（5s 輪詢）/ `MyBookings.tsx`（含取消）
 
-**後端**
-- [ ] `POST /civilian/bookings` 完整實作：衝突檢查（含 1 小時緩衝）、建立 `Booking`、設定 30 分鐘業務回應 deadline
-- [ ] LINE Flex Message：發送給業務的接單通知（含「接受」/「拒絕」postback 按鈕）
-- [ ] Webhook postback `booking:accept`：鎖定時段（`LOCKED`）、設定 30 分鐘付款 deadline、用藍新 API 產生付款連結、推播給民眾
-- [ ] Webhook postback `booking:reject`：取消預約、通知民眾
-- [ ] 排程任務：業務 30 分鐘未回應 → 自動取消（狀態 `EXPIRED_AGENT`）、通知民眾
-- [ ] 藍新 Webhook `/webhook/newebpay`：AES-256 解密 + SHA256 驗簽、付款成功 → `CONFIRMED`、建立 `CommissionSnapshot`（鎖定當下費率）、封鎖前後 1 小時緩衝時段
-- [ ] 排程任務：民眾 30 分鐘未付款 → 自動取消（狀態 `EXPIRED_PAYMENT`）、釋放時段、通知業務
-- [ ] `DELETE /civilian/bookings/:id`：民眾取消，依「24 小時」政策決定退款、呼叫藍新退款 API
-- [ ] `DELETE /agent/bookings/:id`：業務取消，全額退款 + 記錄取消理由 + 推播後台管理員
-
----
-
-## Sprint 2 — 排班 & LINE 通知（P0）
-
-**後端**
-- [ ] `GET/POST/DELETE /agent/slots`：時段 CRUD，含衝突檢查（`LOCKED`/`BOOKED` 不可刪）
-- [ ] `GET/POST/DELETE /agent/rules`：週期排班規則 CRUD
-- [ ] 週期排班展開：依 `AvailabilityRule` 自動產生未來 N 週的 `AvailabilitySlot`
-- [ ] LINE 通知矩陣：依 `tech-spec.md` 第 5 節實作所有推播（業務接單、預約成立、逾時取消、服務當天提醒…）
-- [ ] LINE Rich Menu 切換：依角色（一般民眾 / 訂閱民眾 / KYC 待審 / KYC 通過業務）綁定不同 menu
-
-**前端**
-- [ ] `AgentDetail.tsx`：串接 API、整合 FullCalendar.js 顯示業務可預約時段
-- [ ] `BookingConfirm.tsx`：確認頁面 → 送出預約申請
-- [ ] `BookingResult.tsx`：顯示預約結果（等待業務 / 付款連結 / 成功 / 失敗）
-- [ ] `MyBookings.tsx`：串接 API 顯示預約紀錄，含取消按鈕
-
----
-
-## Sprint 3 — KYC & 業務端（P0）
-
-**後端**
-- [ ] S3 presigned URL 端點：前端直傳圖片至 S3，後端僅存 object key
-- [ ] `POST /agent/kyc`：儲存 `KycSubmission`、通知後台待審
-- [ ] `PATCH /admin/kyc/:id`：審核通過/拒絕 → 更新 `agentProfile.kycStatus`、切換 Rich Menu、LINE 通知業務
-
-**前端**
-- [ ] `AgentList.tsx`：串接 API 顯示業務列表、訂閱門檻提示
-- [ ] `Subscribe.tsx`：產生藍新訂閱付款連結
-- [ ] `agent/Kyc.tsx`：上傳身分證 + 存摺圖片（直傳 S3）
-- [ ] `agent/Calendar.tsx`：FullCalendar.js 管理自己的排班（新增 / 刪除時段、週期規則）
+**Sprint 3 — KYC & 訂閱**
+- [x] `lib/s3.ts`：`getPresignedPutUrl()`，AWS S3 v3 SDK
+- [x] `GET /agent/me`：回傳業務 kycStatus
+- [x] `GET /civilian/me`：回傳民眾訂閱狀態
+- [x] `GET /agent/presigned-url`：前端直傳 S3（category: id_card | bank_book）
+- [x] `POST /agent/kyc`：儲存 KycSubmission、kycStatus→PENDING、通知 ADMIN
+- [x] `GET /admin/kyc`：列出 PENDING KYC 申請（含業務資訊）
+- [x] `PATCH /admin/kyc/:id`：審核通過/拒絕 → kycStatus 更新、Rich Menu 切換、LINE 通知業務
+- [x] `POST /civilian/subscribe`：藍新訂閱付款（merchantOrderNo 暫存 AdminSetting `sub_order_*`）
+- [x] 藍新 Webhook：訂閱付款分支，確認後更新 isSubscribed / subscriptionExpiresAt / Rich Menu
+- [x] `AgentList.tsx`：業務卡片列表、訂閱門檻提示
+- [x] `Subscribe.tsx`：訂閱付款轉址頁
+- [x] `agent/Kyc.tsx`：直傳 S3 + 提交 KYC 審核
+- [x] `agent/Calendar.tsx`：FullCalendar.js 管理排班（時段 / 週期規則）
 
 ---
 
 ## Sprint 4 — 線下核銷 & 分潤（P1）
 
 **後端**
-- [ ] `GET /agent/bookings/:id/qrcode-token`：產生含 HMAC 簽名的短效 token
-- [ ] `GET /clinic/verify/:bookingId`：驗證 token 合法性、回傳預約資訊
-- [ ] `POST /clinic/verify/:bookingId/amount`：建立 `TransactionVerification`、LINE 通知業務確認、設 30 分鐘 deadline
-- [ ] Webhook postback `transaction:confirm`：業務確認金額、更新 `WalletTransaction` 為 `PENDING`
-- [ ] 排程任務：30 分鐘未確認 → `AUTO_CONFIRMED`、建立 `WalletTransaction`
+- [x] `GET /agent/bookings/:id/qrcode-token`：產生含 HMAC 簽名的短效 token（5 分鐘有效期）
+- [x] `GET /clinic/verify/:bookingId`：驗證 token 合法性、回傳預約資訊
+- [x] `POST /clinic/verify/:bookingId/amount`：建立 `TransactionVerification`、LINE 通知業務確認、設 30 分鐘 deadline
+- [x] Webhook postback `transaction:confirm` / `transaction:dispute`：業務確認或爭議、建立 `WalletTransaction`
+- [x] 排程任務：30 分鐘未確認 → `AUTO_CONFIRMED`、建立 `WalletTransaction`
 
 **前端**
-- [ ] `agent/QrCode.tsx`：顯示 QR Code（含 booking token）
-- [ ] `agent/Commission.tsx`：Canvas 動態浮水印（userId + timestamp，45 度密集分布）
-- [ ] `agent/Wallet.tsx`：顯示 Pending / Available / Paid 明細
-- [ ] `clinic/Scan.tsx`：呼叫 `liff.scanCode()` 掃描業務 QR Code
-- [ ] `clinic/Verify.tsx`：輸入成交金額並送出
-- [ ] `clinic/VerifyResult.tsx`：核銷結果頁
+- [x] `agent/QrCode.tsx`：顯示 QR Code（5 分鐘倒計時 + 自動刷新）
+- [x] `agent/Commission.tsx`：Canvas 動態浮水印（userId + timestamp，45 度密集分布）
+- [x] `agent/Wallet.tsx`：顯示 Pending / Available / Paid 明細（含加總卡片）
+- [x] `clinic/Scan.tsx`：呼叫 `liff.scanCodeV2()` 掃描業務 QR Code（Dev 模式貼 token）
+- [x] `clinic/Verify.tsx`：顯示預約資訊 + 輸入成交金額送出
+- [x] `clinic/VerifyResult.tsx`：核銷結果頁（含核銷單號）
 
 ---
 
 ## Sprint 5 — 帳務 & 後台（P2）
 
 **後端**
-- [ ] 每月 5 號排程：計算 Available 錢包餘額、透過藍新 API 自動撥款、更新狀態為 `Paid`
-- [ ] PDF 結算單產出（`市場推廣費結算單`）並透過 LINE 推播連結給業務 & 診所
-- [ ] `GET /clinic/report`：對帳報表 API（成交紀錄 × 佣金 × 結算狀態）
+- [x] 每月 5 號排程：計算 Available 錢包餘額、透過藍新 API 自動撥款、更新狀態為 `Paid`
+- [x] PDF 結算單產出（`市場推廣費結算單`）並透過 LINE 推播連結給業務（`lib/pdf.ts` + S3）
+- [x] `GET /clinic/report`：對帳報表 API（成交紀錄 × 佣金 × 結算狀態）
 
 **後台管理 Web（獨立非 LIFF）**
-- [ ] 初始化獨立前端專案（`admin-web/`）
-- [ ] KYC 審核列表頁面
-- [ ] 業務管理頁（扣點 / 停權）
-- [ ] 手動調帳頁面
-- [ ] 推播訊息審核佇列
-- [ ] 費率與規則設定頁（對應 `AdminSetting` KV table）
+- [x] 初始化獨立前端專案（`admin-web/`）— Vite + React + TypeScript，port 4173
+- [x] KYC 審核列表頁面（通過 / 拒絕 + 備註 Modal）
+- [x] 業務管理頁（扣點 Modal + 停權 / 解除停權）
+- [x] 手動調帳頁面（正負金額 + 備註）
+- [x] 推播訊息審核佇列（批准 / 拒絕 + 備註）
+- [x] 費率與規則設定頁（AdminSetting KV + 新增自訂 key）
 
 ---
 

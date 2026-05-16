@@ -168,7 +168,7 @@ model AvailabilitySlot {
   // Populated if generated from a recurring rule
   ruleId String? @map("rule_id")
 
-  booking Booking?
+  bookings Booking[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -184,7 +184,7 @@ model Booking {
   civilian       User         @relation("CivilianBookings", fields: [civilianId], references: [id])
   agentProfileId String       @map("agent_profile_id")
   agentProfile   AgentProfile @relation("AgentBookings", fields: [agentProfileId], references: [id])
-  slotId         String       @unique @map("slot_id")
+  slotId         String       @map("slot_id")
   slot           AvailabilitySlot @relation(fields: [slotId], references: [id])
 
   status BookingStatus @default(PENDING_AGENT)
